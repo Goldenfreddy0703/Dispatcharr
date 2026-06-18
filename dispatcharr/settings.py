@@ -267,6 +267,24 @@ else:
     else:
         print("PostgreSQL TLS: disabled")
 
+    # Celery runs a threaded/prefork worker pool that is NOT gevent
+    # monkey-patched. The django_db_geventpool backend shares connections via a
+    # process-global pool; under real OS threads (e.g. the M3U refresh worker
+    # threads that call connections.close_all()) two contexts can end up using
+    # the same psycopg3 socket, corrupting the wire protocol ("lost
+    # synchronization with server" / "the connection is closed"). Use the
+    # standard thread-local psycopg3 backend for Celery; the gevent uWSGI web
+    # workers keep the geventpool backend.
+    import sys as _sys
+
+    _IS_CELERY = bool(_sys.argv) and "celery" in os.path.basename(_sys.argv[0])
+    if _IS_CELERY:
+        DATABASES["default"]["ENGINE"] = "django.db.backends.postgresql"
+        for _pool_opt in ("MAX_CONNS", "REUSE_CONNS", "pool", "CONN_MAX_LIFETIME"):
+            DATABASES["default"]["OPTIONS"].pop(_pool_opt, None)
+        DATABASES["default"]["CONN_MAX_AGE"] = 0
+        print("Database: Celery worker using standard (non-pooled) psycopg3 backend")
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",

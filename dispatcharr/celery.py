@@ -2,7 +2,7 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, task_prerun, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_ready, worker_process_init
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,25 @@ app.conf.update(
 app.conf.task_routes = {
     'apps.channels.tasks.run_recording': {'queue': 'dvr'},
 }
+
+
+@worker_process_init.connect
+def reset_db_connections_on_fork(**_kwargs):
+    """Drop DB connections inherited from the parent on prefork/autoscale fork.
+
+    The geventpool psycopg3 backend keeps connections warm in a process-global
+    pool. When Celery's prefork pool (especially with --autoscale) forks a new
+    child, that child inherits the parent's open psycopg3 sockets. Two processes
+    then read/write the same fd, corrupting the wire protocol ("lost
+    synchronization with server"). Closing all connections at fork time forces
+    each child to open its own sockets before running any task.
+    """
+    from django.db import connections
+
+    try:
+        connections.close_all()
+    except Exception:
+        pass
 
 
 @task_prerun.connect
